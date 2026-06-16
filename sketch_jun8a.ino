@@ -1,24 +1,23 @@
 /**
- * ESP32 智慧循路小車控制程式
- * 適用硬體：ESP32, L298N 驅動模組, 紅外線循線感測器
+ * ESP32 智慧循路小車控制程式 - 依據修正版接線圖編寫
+ * 適用硬體：ESP32, L298N 驅動模組, 五路紅外線循線感測器
  */
 
-// === 1. 腳位定義 (請依實際接線調整) ===
-// 左馬達控制
-const int motorLeft_IN1 = 12;  
+// === 1. 馬達控制腳位  ===
+const int motorLeft_IN1 = 12;
 const int motorLeft_IN2 = 13;  
-// 右馬達控制
-const int motorRight_IN3 = 14; 
-const int motorRight_IN4 = 27; 
+const int motorRight_IN3 = 21; 
+const int motorRight_IN4 = 22;
 
-// 紅外線循線感測器腳位 (這裡以中央兩路為例)
-const int sensorLeft = 32;   // 左感測器
-const int sensorRight = 33;  // 右感測器
+// === 2. 循線感測器腳位 (使用核心三路進行精準控制) ===
+const int sensorLeft  = 16;    
+const int sensorCenter = 17;   
+const int sensorRight = 5;     
+// 註：最外側的 OUT1(P4) 與 OUT5(P18) 本次暫不參與基礎循線，預留未來十字路口偵測使用
 
-// === 2. PWM 速度參數設定 ===
-// ESP32 的 PWM 使用 analogWrite (相容新版 Arduino IDE)
-const int speedMax = 180;    // 直行速度 (0~255)
-const int speedTurn = 120;   // 轉彎時的速度 (0~255)
+// === 3. PWM 速度參數設定 ===
+const int speedMax = 160;    
+const int speedTurn = 130;   
 
 void setup() {
   Serial.begin(115200);
@@ -31,66 +30,72 @@ void setup() {
   
   // 設定感測器腳位為輸入
   pinMode(sensorLeft, INPUT);
+  pinMode(sensorCenter, INPUT);
   pinMode(sensorRight, INPUT);
 
-  Serial.println("循路小車已就緒！");
+  Serial.println("修正版循路小車硬體初始化完畢！");
 }
 
 void loop() {
-  // 讀取感測器數值 (通常偵測到黑線輸出為 HIGH，白底為 LOW，若相反請在下方邏輯反轉)
-  int leftState = digitalRead(sensorLeft);
-  int rightState = digitalRead(sensorRight);
+  // 讀取三個核心感測器的狀態
+  // 提示：若吸到黑線為 HIGH，白底為 LOW
+  int L = digitalRead(sensorLeft);
+  int C = digitalRead(sensorCenter);
+  int R = digitalRead(sensorRight);
 
-  // === 3. 循線核心邏輯判斷 ===
-  if (leftState == LOW && rightState == LOW) {
-    // 兩邊都是白底 -> 直行
+  // === 三路循線核心控制邏輯 ===
+  if (C == HIGH && L == LOW && R == LOW) {
+    // 只有中間壓到黑線 -> 精準在軌道上，直行前進
     moveForward(speedMax, speedMax);
-  } 
-  else if (leftState == HIGH && rightState == LOW) {
-    // 左邊壓到黑線 -> 偏左了，需要左轉修正
-    turnLeft();
-  } 
-  else if (leftState == LOW && rightState == HIGH) {
-    // 右邊壓到黑線 -> 偏右了，需要右轉修正
-    turnRight();
-  } 
-  else if (leftState == HIGH && rightState == HIGH) {
-    // 兩邊都壓到黑線 -> 遇到十字路口或終點，暫時減速直行或停車
-    moveForward(speedTurn, speedTurn);
   }
-  
-  delay(10); // 稍微延遲讓運行更穩定
+  else if (L == HIGH && R == LOW) {
+    // 左邊壓到黑線 -> 車身偏右了，需要左轉修正
+    turnLeft();
+  }
+  else if (R == HIGH && L == LOW) {
+    // 右邊壓到黑線 -> 車身偏左了，需要右轉修正
+    turnRight();
+  }
+  else if (L == LOW && C == LOW && R == LOW) {
+    // 三路都處於白底 -> 可能衝出跑道或線太細，暫時減速微幅前進找線
+    moveForward(speedTurn - 20, speedTurn - 20);
+  }
+  else if (L == HIGH && C == HIGH && R == HIGH) {
+    // 三路同時壓到黑線 -> EBS 觸發：遇到橫向終點線或十字路口，緊急煞車
+    motorStop();
+    Serial.println("EBS 觸發：全黑線安全煞停");
+  }
+
+  delay(10); // 系統微幅延遲，維持運行穩定
 }
 
-// === 4. 馬達驅動子功能 ===
+// === 馬達動態驅動子功能 ===
 
-// 控制前後與速度
+// 前進
 void moveForward(int speedL, int speedR) {
-  // 左馬達正轉
   analogWrite(motorLeft_IN1, speedL);
   analogWrite(motorLeft_IN2, 0);
-  // 右馬達正轉
   analogWrite(motorRight_IN3, speedR);
   analogWrite(motorRight_IN4, 0);
 }
 
-// 左轉（左輪慢或後退，右輪前進）
+// 左轉修正
 void turnLeft() {
-  analogWrite(motorLeft_IN1, 0);
-  analogWrite(motorLeft_IN2, speedTurn); // 左輪反轉或停止
-  analogWrite(motorRight_IN3, speedTurn);
-  analogWrite(motorRight_IN4, 0);        // 右輪前進
+  analogWrite(motorLeft_IN1, 0);          // 左輪減速或反轉
+  analogWrite(motorLeft_IN2, speedTurn);
+  analogWrite(motorRight_IN3, speedTurn); // 右輪全速前進
+  analogWrite(motorRight_IN4, 0);
 }
 
-// 右轉（右輪慢或後退，左輪前進）
+// 右轉修正
 void turnRight() {
-  analogWrite(motorLeft_IN1, speedTurn);
-  analogWrite(motorLeft_IN2, 0);         // 左輪前進
-  analogWrite(motorRight_IN3, 0);
-  analogWrite(motorRight_IN4, speedTurn); // 右輪反轉或停止
+  analogWrite(motorLeft_IN1, speedTurn);  // 左輪全速前進
+  analogWrite(motorLeft_IN2, 0);
+  analogWrite(motorRight_IN3, 0);          // 右輪減速或反轉
+  analogWrite(motorRight_IN4, speedTurn);
 }
 
-// 煞車停止
+// 緊急煞車
 void motorStop() {
   analogWrite(motorLeft_IN1, 0);
   analogWrite(motorLeft_IN2, 0);
